@@ -1,0 +1,133 @@
+# Loading Require Libraries--------------------------------------------------------------#
+lib <- .libPaths()[1]
+required.packages <- c("vegan","bipartite","dplyr","PerformanceAnalytics","BAT","stringdist","taxize","FD",
+                       "FactoMineR","factoextra","picante","ape","Ternary","ggplot2","ggtern","readxl")
+i1 <- !(required.packages %in% row.names(installed.packages()))
+if(any(i1)) {
+  install.packages(required.packages[i1], dependencies = TRUE, lib = lib) 
+}
+lapply(required.packages, require, character.only = TRUE)
+
+#Load data-------------------------------------------------------------------------#
+Species_name=as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "taxa_traits"))[,1]
+Genus=as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "taxa_traits"))[,2]
+Species=as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "taxa_traits"))[,3]
+Med <- as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "taxa_traits"))[,4:31]
+rownames(Med)=Species_name
+traits=as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "taxa_traits"))[,32:33]
+rownames(traits)=Species_name
+env.par <- as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "envdata"))[,3:7]
+rownames(env.par)=colnames(Med)
+bioregions <- as.data.frame(read_excel("Supplementary Materials_SM1.xlsx", sheet = "bioregions"))[,2:29]
+rownames(bioregions)=colnames(bioregions)
+
+#Retrieve taxonomic information from WORMS to estimate the
+#(surrogate) phylogenetic distance------------------------------------------------------#
+taxa=paste(Genus,Species)
+taxa_class=classification(taxa,db="worms",return_id=F)
+taxa_frame=as.data.frame(cbind(taxa_class))
+#Subset for tree reconstruction--------------------------------------------------------#
+subset_taxa_frame=data.frame(taxa_frame[,9:14],species=Species)
+rownames(subset_taxa_frame)=rownames(Med)
+#Set taxonomic distance matrix as surrogate for phylogeny
+tax.dist=taxa2dist(subset_taxa_frame,varstep=T)
+
+#Functional distance estimation--------------------------------------------------------#
+fun.dist=gowdis(traits)
+
+#Environmental, geographic and biogeographic distance estimation-----------------------#
+env.PCA=PCA(data.frame(decostand(env.par[,2:3],"standardize"),env.par$`PPOMed - Probability of occurrence of Posidonia oceanica`), graph=T)
+scores.PCA=env.PCA$ind$coord[,1:2]
+env.dist=as.matrix(dist(scores.PCA))#Environmental distance (sensu lato)
+geo.dist=dist(data.frame(env.par$Longitude,env.par$Latitude))
+
+#Taxonomic, functional and phylogenetic beta diversity---------------------------------#
+#Create functional and phylogenetic trees and use them in beta diversity analyses
+#NOTE: when running FDb and PDb a warning about the 'un-matching' between the
+#species name in the community matrix and both functional and phylogenetic trees appear.
+#Do not be scare! Although this problem, the function still returns the expected result#
+f_tree=as.phylo(hclust(fun.dist))
+p_tree=as.phylo(hclust(tax.dist))
+TDb=beta(t(Med),abund = FALSE)
+FDb=beta(t(Med),f_tree,abund = FALSE)
+PDb=beta(t(Med),p_tree,abund = FALSE)
+TDb.multi=beta.multi(t(Med),abund = FALSE)
+FDb.multi=beta.multi(t(Med),f_tree,abund = FALSE)
+PDb.multi=beta.multi(t(Med),p_tree,abund = FALSE)
+
+#Null models
+#randomize the species names along the functional and phylogenetic trees---------------#
+null.traits=function(i) {
+  null.traits=tipShuffle(as.phylo(hclust(fun.dist)))
+  FDb.null.traits=beta.multi(t(Med),null.traits,abund = FALSE)[,1]
+}
+null.phylo=function(i) {
+  null.phylo=tipShuffle(as.phylo(hclust(tax.dist)))
+  FDb.null.phylo=beta.multi(t(Med),null.phylo,abund = FALSE)[,1]
+}
+set.seed(1)   # for reproducible example; you may want to comment out this line
+null.FD <- t(sapply(1:1000,null.traits))
+null.PD <- t(sapply(1:1000,null.phylo))
+z.FD.total=(FDb.multi[1,1]-(null.FD[,1]))/sd(null.FD[,1])
+z.FD.repl=(FDb.multi[2,1]-(null.FD[,2]))/sd(null.FD[,2])
+z.FD.rich=(FDb.multi[3,1]-(null.FD[,3]))/sd(null.FD[,3])
+z.PD.total=(PDb.multi[1,1]-(null.PD[,1]))/sd(null.PD[,1])
+z.PD.repl=(PDb.multi[2,1]-(null.PD[,2]))/sd(null.PD[,2])
+z.PD.rich=(PDb.multi[3,1]-(null.PD[,3]))/sd(null.PD[,3])
+
+#Compare TDβ PDβ and FDβ for each component -------------------------------------------#
+TDb_FDb_total<-vegan::mantel(TDb$Btotal,FDb$Btotal)
+TDb_PDb_total<-vegan::mantel(TDb$Btotal,PDb$Btotal)
+TDb_FDb_repl<-vegan::mantel(TDb$Brepl,FDb$Brepl)
+TDb_PDb_repl<-vegan::mantel(TDb$Brepl,PDb$Brepl)
+TDb_FDb_rich<-vegan::mantel(TDb$Brich,FDb$Brich)
+TDb_PDb_rich<-vegan::mantel(TDb$Brich,PDb$Brich)
+#Compare FDβ and PDβ while controlling for TDβ-----------------------------------------#
+FDb_PDb_total<-vegan::mantel(FDb$Btotal,PDb$Btotal)
+FDb_PDb_TDb_total<-vegan::mantel.partial(FDb$Btotal,PDb$Btotal,TDb$Btotal)
+FDb_PDb_repl<-vegan::mantel(FDb$Brepl,PDb$Brepl)
+FDb_PDb_TDb_repl<-vegan::mantel.partial(FDb$Brepl,PDb$Brepl,TDb$Brepl)
+FDb_PDb_rich<-vegan::mantel(FDb$Brich,PDb$Brich)
+FDb_PDb_TDb_rich<-vegan::mantel.partial(FDb$Brich,PDb$Brich,TDb$Brich)
+
+#Function to perform the (partial) Mantel test relating the beta diversity components--#
+#with the environmental and geographic distance and controlling for the biogeographic--#
+#effect--------------------------------------------------------------------------------#
+mantel.function=function(beta,env,geo,bioreg) {
+  Beta.total.env=vegan::mantel(beta$Btotal,env)
+  Beta.repl.env=vegan::mantel(beta$Brepl,env)
+  Beta.rich.env=vegan::mantel(beta$Brich,env)
+  Beta.total.geo=vegan::mantel(beta$Btotal,geo)
+  Beta.repl.geo=vegan::mantel(beta$Brepl,geo)
+  Beta.rich.geo=vegan::mantel(beta$Brich,geo)
+  Beta.total.env.geo=vegan::mantel.partial(beta$Btotal,env,geo)
+  Beta.repl.env.geo=vegan::mantel.partial(beta$Brepl,env,geo)
+  Beta.rich.env.geo=vegan::mantel.partial(beta$Brich,env,geo)
+  Beta.total.geo.env=vegan::mantel.partial(beta$Btotal,geo,env)
+  Beta.repl.geo.env=vegan::mantel.partial(beta$Brepl,geo,env)
+  Beta.rich.geo.env=vegan::mantel.partial(beta$Brich,geo,env)
+  Beta.total.env.bioreg=vegan::mantel.partial(beta$Btotal,env,bioreg)
+  Beta.repl.env.bioreg=vegan::mantel.partial(beta$Brepl,env,bioreg)
+  Beta.rich.env.bioreg=vegan::mantel.partial(beta$Brich,env,bioreg)
+  Beta.total.geo.bioreg=vegan::mantel.partial(beta$Btotal,geo,bioreg)
+  Beta.repl.geo.bioreg=vegan::mantel.partial(beta$Brepl,geo,bioreg)
+  Beta.rich.geo.bioreg=vegan::mantel.partial(beta$Brich,geo,bioreg)
+  
+  Mantel.stats=rbind(Beta.total.env$statistic,Beta.repl.env$statistic,
+                     Beta.rich.env$statistic,Beta.total.geo$statistic,Beta.repl.geo$statistic,Beta.rich.geo$statistic,Beta.total.env.geo$statistic,Beta.repl.env.geo$statistic,Beta.rich.env.geo$statistic,Beta.total.env.bioreg$statistic,Beta.repl.env.bioreg$statistic,Beta.rich.env.bioreg$statistic,Beta.total.geo.bioreg$statistic,Beta.repl.geo.bioreg$statistic,Beta.rich.geo.bioreg$statistic,Beta.total.geo.env$statistic,Beta.repl.geo.env$statistic,Beta.rich.geo.env$statistic)
+  
+  Mantel.p=rbind(Beta.total.env$signif,Beta.repl.env$signif,Beta.rich.env$signif,Beta.total.geo$signif,Beta.repl.geo$signif,Beta.rich.geo$signif,Beta.total.env.geo$signif,Beta.repl.env.geo$signif,Beta.rich.env.geo$signif,Beta.total.env.bioreg$signif,Beta.repl.env.bioreg$signif,Beta.rich.env.bioreg$signif,Beta.total.geo.bioreg$signif,Beta.repl.geo.bioreg$signif,Beta.rich.geo.bioreg$signif,Beta.total.geo.env$signif,Beta.repl.geo.env$signif,Beta.rich.geo.env$signif)
+  
+  Data=cbind(Mantel.stats,Mantel.p)
+  colnames(Data)=c("Mantel statistic","p-value")
+  rownames(Data)=c("Total.ENV","Replacement.ENV","Ricnhess.ENV",
+                   "Total.GEO","Replacement.GEO","Ricnhess.GEO",
+                   "Total.ENV|GEO","Replacement.ENV|GEO","Ricnhess.ENV|GEO",
+                   "Total.ENV|BIO","Replacement.ENV|BIO","Ricnhess.ENV|BIO","Total.GEO|BIO","Replacement.GEO|BIO","Ricnhess.GEO|BIO",
+                   "Total.GEO|ENV","Replacement.GEO|ENV","Ricnhess.GEO|ENV")
+  Data
+}
+
+TDb.mantel=mantel.function(TDb,as.dist(env.dist),geo.dist,as.dist(bioregions))
+FDb.mantel=mantel.function(FDb,as.dist(env.dist),geo.dist,as.dist(bioregions))
+PDb.mantel=mantel.function(PDb,as.dist(env.dist),geo.dist,as.dist(bioregions))
