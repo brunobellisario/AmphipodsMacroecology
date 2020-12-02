@@ -128,6 +128,6 @@ mantel.function=function(beta,env,geo,bioreg) {
   Data
 }
 
-TDb.mantel=mantel.function(TDb,as.dist(env.dist),geo.dist,as.dist(bioregions))
+TDb.mantel=mantel.function(TDb,as.dist(env.dist),geo.dist,as.dist(bioregions)) 
 FDb.mantel=mantel.function(FDb,as.dist(env.dist),geo.dist,as.dist(bioregions))
 PDb.mantel=mantel.function(PDb,as.dist(env.dist),geo.dist,as.dist(bioregions))
